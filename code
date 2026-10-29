@@ -1,0 +1,553 @@
+//Ingestion layer
+// File format creation
+ CREATE OR REPLACE FILE Format Retail_csv_format
+    TYPE = 'CSV'
+    FIELD_DELIMITER = ','
+    SKIP_HEADER = 1
+    FIELD_OPTIONALLY_ENCLOSED_BY = '"'
+    TRIM_SPACE = TRUE
+    NULL_IF = ('NULL', 'null', '')
+    ENCODING = 'ISO-8859-1';
+
+
+//Creating Stage
+CREATE OR REPLACE STAGE Retail_Raw_Data
+    FILE_FORMAT = Retail_csv_format;
+
+//verifying whether the csv data is loaded into the stage
+List @Retail_Raw_Data;
+
+//Previewing the data that present in the stage and validating it
+SELECT 
+    $1::NUMBER AS row_id,
+    $2::VARCHAR(50) AS order_id,
+    $3::DATE AS order_date,
+    $4::DATE AS ship_date,
+    $5::VARCHAR(200) AS ship_mode,
+    $6::VARCHAR(50) AS customer_id,
+    $7::VARCHAR(300) AS customer_name,
+    $8::VARCHAR(100) AS segment,
+    $9::VARCHAR(100) AS country,
+    $10::VARCHAR(100) AS city,
+    $11::VARCHAR(100) AS state,
+    $12::VARCHAR(20) AS postal_code,
+    $13::VARCHAR(100) AS region,
+    $14::VARCHAR(50) AS product_id,
+    $15::VARCHAR(100) AS category,
+    $16::VARCHAR(100) AS sub_category,
+    $17::VARCHAR(500) AS product_name,
+    $18::NUMBER(10,4) AS price,
+    $19::NUMBER(3) AS quantity,
+    $20::NUMBER(7,2) AS discount
+FROM @Retail_Raw_Data
+LIMIT 10;
+// creating a table and copying the data from stage to table 
+CREATE OR REPLACE TABLE Retail_sales_table (
+    ROW_ID NUMBER,
+    ORDER_ID VARCHAR(50),
+    ORDER_DATE DATE,
+    SHIP_DATE DATE,
+    SHIP_MODE VARCHAR(200),
+    CUSTOMER_ID VARCHAR(50),
+    CUSTOMER_NAME VARCHAR(300),
+    SEGMENT VARCHAR(100),
+    COUNTRY VARCHAR(100),
+    CITY VARCHAR(100),
+    STATE VARCHAR(100),
+    POSTAL_CODE VARCHAR(20),
+    REGION VARCHAR(100),
+    PRODUCT_ID VARCHAR(50),
+    CATEGORY VARCHAR(100),
+    SUB_CATEGORY VARCHAR(100),
+    PRODUCT_NAME VARCHAR(500),
+    PRICE NUMBER(10,4),
+    QUANTITY NUMBER(3),
+    DISCOUNT NUMBER(7,2)
+);
+
+//COPY THE DATA FROM STAGE TO TABLE
+COPY INTO Retail_Sales_Table
+FROM @Retail_Raw_Data
+FILE_FORMAT = (
+    FORMAT_NAME = 'Retail_csv_format'
+)
+ON_ERROR = 'CONTINUE';
+
+select * from Retail_sales_table limit 10;
+
+//including a method to track ingestion runs ,detect failed loads and verify successful ingestions using snowflakes load history
+SELECT * FROM YASWINI_CAPSTONE_DB.INFORMATION_SCHEMA.LOAD_HISTORY 
+WHERE TABLE_NAME = 'RETAIL_SALES_TABLE';
+
+//B.Trasnformation Layer
+
+// Creationg funtion to extract the year from order id
+CREATE OR REPLACE FUNCTION get_order_year(order_id VARCHAR)
+RETURNS NUMBER(4)
+LANGUAGE SQL
+AS
+$$
+    TRY_TO_NUMBER(REGEXP_SUBSTR(order_id, '20[0-9]{2}'))
+$$;
+//Displaying the order year using the get_order_year funtion
+SELECT
+    ORDER_ID,
+    GET_ORDER_YEAR(ORDER_ID) AS ORDER_YEAR
+FROM retail_sales_table
+LIMIT 10;
+
+//Creating a function to calculates the number of days between ORDER_DATE and SHIP_DATE.
+CREATE OR REPLACE FUNCTION calculate_days_to_ship(
+    order_date DATE,
+    ship_date DATE
+)
+RETURNS NUMBER(3)
+LANGUAGE SQL
+AS
+$$
+    DATEDIFF('DAY', order_date, ship_date)
+$$;
+//displaying day to ship
+SELECT
+    ORDER_DATE,
+    SHIP_DATE,
+    calculate_days_to_ship(ORDER_DATE, SHIP_DATE) AS DAYS_TO_SHIP
+FROM retail_sales_table
+LIMIT 10;
+//Creating a function to removes the CUST- prefix and converts the remaining value to a number.
+CREATE OR REPLACE FUNCTION standardize_customer_id(customer_id VARCHAR)
+RETURNS NUMBER(10)
+LANGUAGE SQL
+AS
+$$
+    TRY_TO_NUMBER(REGEXP_REPLACE(customer_id, '[^0-9]', ''))
+$$;
+// Displaying the Standardized/updated clean Customer_ID
+SELECT
+    CUSTOMER_ID,
+    standardize_customer_id(CUSTOMER_ID) AS CLEAN_ID
+FROM retail_sales_table
+LIMIT 10;
+//Creating a function to removes non-numeric prefixes/suffixes and converts the value to NUMBER(10)
+CREATE OR REPLACE FUNCTION standardize_order_id(order_id VARCHAR)
+RETURNS NUMBER(10)
+LANGUAGE SQL
+AS
+$$
+    TRY_TO_NUMBER(REGEXP_REPLACE(order_id, '[^0-9]', ''))
+$$;
+//displaying the standardized order id
+SELECT
+    ORDER_ID,
+    standardize_order_id(ORDER_ID)
+FROM  retail_sales_table
+LIMIT 10;
+//Creating a function to removes non-numeric prefixes/suffixes and converts the value to NUMBER(10) from Product_ID
+CREATE OR REPLACE FUNCTION standardize_product_id(product_id VARCHAR)
+RETURNS NUMBER(10)
+LANGUAGE SQL
+AS
+$$
+    TRY_TO_NUMBER(REGEXP_REPLACE(product_id, '[^0-9]', ''))
+$$;
+//Displaying the standardized product_id
+SELECT
+    PRODUCT_ID,
+    standardize_product_id(PRODUCT_ID)
+FROM retail_sales_table
+LIMIT 10;
+
+//Create a function to a reliable SALES metric per order, derived from PRICE × QUANTITY.
+CREATE OR REPLACE FUNCTION calculate_sales(
+    price NUMBER,
+    quantity NUMBER
+)
+RETURNS NUMBER(15,5)
+LANGUAGE SQL
+AS
+$$
+    ROUND(price * quantity, 5)
+$$;
+// Displaying the calculated sales
+SELECT
+    PRICE,
+    QUANTITY,
+    CALCULATE_SALES(PRICE, QUANTITY) AS SALES
+FROM retail_sales_table
+LIMIT 10;
+
+//Creating the target RETAIL_sales
+CREATE OR REPLACE TABLE Retail_sales (
+    order_id NUMBER(10),
+    order_date DATE,
+    ship_date DATE,
+    ship_mode VARCHAR(200),
+    customer_id NUMBER(10),
+    customer_name VARCHAR(300),
+    segment VARCHAR(100),
+    country VARCHAR(100),
+    city VARCHAR(100),
+    state VARCHAR(100),
+    postal_code NUMBER(10),
+    region VARCHAR(100),
+    product_id NUMBER(10),
+    category VARCHAR(100),
+    sub_category VARCHAR(100),
+    price NUMBER(10,4),
+    quantity NUMBER(3),
+    discount NUMBER(7,2),
+    order_year NUMBER(4),
+    days_to_ship NUMBER(3),
+    sales NUMBER(15,5)
+);
+
+//Inserting all transformed data into Retail_table
+INSERT INTO Retail_sales (
+    order_id,
+    order_date,
+    ship_date,
+    ship_mode,
+    customer_id,
+    customer_name,
+    segment,
+    country,
+    city,
+    state,
+    postal_code,
+    region,
+    product_id,
+    category,
+    sub_category,
+    price,
+    quantity,
+    discount,
+    order_year,
+    days_to_ship,
+    sales
+)
+SELECT
+    standardize_order_id(order_id) AS order_id,
+    order_date,
+    ship_date,
+    ship_mode,
+    standardize_customer_id(customer_id) AS customer_id,
+    customer_name,
+    segment,
+    country,
+    city,
+    state,
+    postal_code,
+    region,
+    standardize_product_id(product_id) AS product_id,
+    category,
+    sub_category,
+    price,
+    quantity,
+    discount,
+    get_order_year(order_id) AS order_year,
+    calculate_days_to_ship(order_date, ship_date) AS days_to_ship,
+    calculate_sales(price, quantity) AS sales
+FROM retail_sales_table;
+
+// Validating final table
+SELECT * FROM Retail_sales
+LIMIT 10;
+
+//Validation of UDF-Based Transformations
+SELECT
+    ORDER_ID,
+    ORDER_DATE,
+    SHIP_DATE,
+    CUSTOMER_ID,
+    PRODUCT_ID,
+    PRICE,
+    QUANTITY,
+    ORDER_YEAR,
+    DAYS_TO_SHIP,
+    SALES
+FROM Retail_sales
+LIMIT 10;
+
+
+
+//C.PROCESSING LAYER
+CREATE OR REPLACE STREAM SALES_STREAM
+ON TABLE RETAIL_SALES_TABLE;
+
+SELECT
+    METADATA$ACTION,
+    METADATA$ISUPDATE,
+    METADATA$ROW_ID,
+    ORDER_ID,
+    CUSTOMER_ID,
+    PRODUCT_ID
+FROM SALES_STREAM;
+
+
+// Snowflake Task can automatically execute the includes inserts, updates, and deletes every day.
+
+CREATE OR REPLACE TASK PROCESS_SALES_DAILY
+    WAREHOUSE = COMPUTE_WH
+    SCHEDULE = 'USING CRON 0 2 * * * Asia/Kolkata'
+    WHEN SYSTEM$STREAM_HAS_DATA('SALES_STREAM')
+AS
+MERGE INTO RETAIL_sales AS TARGET
+
+USING (
+    SELECT
+        standardize_order_id(order_id) AS order_id,
+        order_date,
+        ship_date,
+        ship_mode,
+        standardize_customer_id(customer_id) AS customer_id,
+        customer_name,
+        segment,
+        country,
+        city,
+        state,
+        postal_code,
+        region,
+        standardize_product_id(product_id) AS product_id,
+        category,
+        sub_category,
+        price,
+        quantity,
+        discount,
+        get_order_year(order_id) AS order_year,
+        calculate_days_to_ship(order_date, ship_date) AS days_to_ship,
+        calculate_sales(price, quantity) AS sales,
+        METADATA$ACTION AS CHANGE_TYPE
+
+    FROM SALES_STREAM
+
+    QUALIFY ROW_NUMBER() OVER (
+        PARTITION BY STANDARDIZE_ORDER_ID(ORDER_ID)
+        ORDER BY
+            CASE
+                WHEN METADATA$ACTION = 'INSERT' THEN 1
+                ELSE 2
+            END
+    ) = 1
+
+) AS SOURCE
+
+ON TARGET.ORDER_ID = SOURCE.ORDER_ID
+
+WHEN MATCHED
+     AND SOURCE.CHANGE_TYPE = 'DELETE'
+THEN DELETE
+
+WHEN MATCHED
+     AND SOURCE.CHANGE_TYPE = 'INSERT'
+THEN UPDATE SET
+    TARGET.ORDER_DATE = SOURCE.ORDER_DATE,
+    TARGET.SHIP_DATE = SOURCE.SHIP_DATE,
+    TARGET.SHIP_MODE = SOURCE.SHIP_MODE,
+    TARGET.CUSTOMER_ID = SOURCE.CUSTOMER_ID,
+    TARGET.CUSTOMER_NAME = SOURCE.CUSTOMER_NAME,
+    TARGET.SEGMENT = SOURCE.SEGMENT,
+    TARGET.COUNTRY = SOURCE.COUNTRY,
+    TARGET.CITY = SOURCE.CITY,
+    TARGET.STATE = SOURCE.STATE,
+    TARGET.POSTAL_CODE = SOURCE.POSTAL_CODE,
+    TARGET.REGION = SOURCE.REGION,
+    TARGET.PRODUCT_ID = SOURCE.PRODUCT_ID,
+    TARGET.CATEGORY = SOURCE.CATEGORY,
+    TARGET.SUB_CATEGORY = SOURCE.SUB_CATEGORY,
+    TARGET.PRICE = SOURCE.PRICE,
+    TARGET.QUANTITY = SOURCE.QUANTITY,
+    TARGET.DISCOUNT = SOURCE.DISCOUNT,
+    TARGET.ORDER_YEAR = SOURCE.ORDER_YEAR,
+    TARGET.DAYS_TO_SHIP = SOURCE.DAYS_TO_SHIP,
+    TARGET.SALES = SOURCE.SALES
+
+WHEN NOT MATCHED
+     AND SOURCE.CHANGE_TYPE = 'INSERT'
+THEN INSERT (
+    ORDER_ID,
+    ORDER_DATE,
+    SHIP_DATE,
+    SHIP_MODE,
+    CUSTOMER_ID,
+    CUSTOMER_NAME,
+    SEGMENT,
+    COUNTRY,
+    CITY,
+    STATE,
+    POSTAL_CODE,
+    REGION,
+    PRODUCT_ID,
+    CATEGORY,
+    SUB_CATEGORY,
+    PRICE,
+    QUANTITY,
+    DISCOUNT,
+    ORDER_YEAR,
+    DAYS_TO_SHIP,
+    SALES
+)
+
+VALUES (
+    SOURCE.ORDER_ID,
+    SOURCE.ORDER_DATE,
+    SOURCE.SHIP_DATE,
+    SOURCE.SHIP_MODE,
+    SOURCE.CUSTOMER_ID,
+    SOURCE.CUSTOMER_NAME,
+    SOURCE.SEGMENT,
+    SOURCE.COUNTRY,
+    SOURCE.CITY,
+    SOURCE.STATE,
+    SOURCE.POSTAL_CODE,
+    SOURCE.REGION,
+    SOURCE.PRODUCT_ID,
+    SOURCE.CATEGORY,
+    SOURCE.SUB_CATEGORY,
+    SOURCE.PRICE,
+    SOURCE.QUANTITY,
+    SOURCE.DISCOUNT,
+    SOURCE.ORDER_YEAR,
+    SOURCE.DAYS_TO_SHIP,
+    SOURCE.SALES
+);
+
+ALTER TASK PROCESS_SALES_DAILY RESUME;
+
+SHOW TASKS LIKE 'PROCESS_SALES_DAILY';
+
+//inserting data to test the created stream the streams
+INSERT INTO retail_sales_table
+VALUES (
+    999999,
+    'CA-2026-999999',
+    '2026-08-23',
+    '2026-08-26',
+    'Standard Class',
+    'CUST-99999',
+    'Test Customer',
+    'Consumer',
+    'United States',
+    'Test City',
+    'Test State',
+    '99999',
+    'West',
+    'PROD-99999',
+    'Technology',
+    'Phones',
+    'Test Product',
+    1000,
+    2,
+    0.10
+);
+
+SELECT
+    METADATA$ACTION,
+    METADATA$ISUPDATE,
+    METADATA$ROW_ID,
+    ORDER_ID,
+    CUSTOMER_ID,
+    PRODUCT_ID
+FROM SALES_STREAM;
+
+SELECT SYSTEM$STREAM_HAS_DATA('SALES_STREAM');
+
+EXECUTE TASK PROCESS_SALES_DAILY;
+
+SELECT *
+FROM RETAIL_SALES
+WHERE ORDER_ID = 2026999999;
+
+UPDATE retail_sales_table
+SET QUANTITY = 5
+WHERE ORDER_ID = 'CA-2026-999999';
+
+SELECT
+    METADATA$ACTION,
+    METADATA$ISUPDATE,
+    ORDER_ID,
+    QUANTITY,
+    PRICE
+FROM SALES_STREAM;
+
+EXECUTE TASK PROCESS_SALES_DAILY;
+
+SELECT
+    ORDER_ID,
+    PRICE,
+    QUANTITY,
+    SALES
+FROM RETAIL_SALES
+WHERE ORDER_ID = 2026999999;
+
+DELETE FROM retail_sales_table
+WHERE ORDER_ID = 'CA-2026-999999';
+
+SELECT
+    METADATA$ACTION,
+    METADATA$ISUPDATE,
+    ORDER_ID
+FROM SALES_STREAM;
+
+EXECUTE TASK PROCESS_SALES_DAILY;
+
+SELECT *
+FROM RETAIL_SALES
+WHERE ORDER_ID = 2026999999;
+select * from retail_sales_table;
+
+WITH MONTHLY_REVENUE AS (
+    SELECT
+        DATE_TRUNC('MONTH', ORDER_DATE) AS ORDER_MONTH,
+        REGION,
+        CATEGORY,
+        SUM(
+            PRICE * QUANTITY * (1 - DISCOUNT)
+        ) AS REVENUE
+    FROM RETAIL_SALES
+    WHERE ORDER_DATE >= DATEADD(
+        MONTH,
+        -6,
+        (SELECT MAX(ORDER_DATE) FROM RETAIL_SALES)
+    )
+    GROUP BY
+        DATE_TRUNC('MONTH', ORDER_DATE),
+        REGION,
+        CATEGORY
+),
+REVENUE_TEXT AS (
+    SELECT
+        TO_VARCHAR(ORDER_MONTH, 'YYYY-MM')
+        || ' | Region: ' || REGION
+        || ' | Category: ' || CATEGORY
+        || ' | Revenue: ' || ROUND(REVENUE, 2) AS TREND_TEXT
+    FROM MONTHLY_REVENUE
+)
+SELECT AI_SUMMARIZE(TREND_TEXT) AS REVENUE_TREND_SUMMARY
+FROM REVENUE_TEXT;
+
+CREATE OR REPLACE VIEW DAILY_REVENUE_BY_REGION AS
+SELECT
+    ORDER_DATE,
+    REGION,
+    SUM(
+        PRICE * QUANTITY * (1 - DISCOUNT)
+    ) AS DAILY_REVENUE
+FROM RETAIL_SALES
+GROUP BY
+    ORDER_DATE,
+    REGION;
+
+SELECT *
+FROM DAILY_REVENUE_BY_REGION
+ORDER BY ORDER_DATE, REGION
+LIMIT 20;
+
+CREATE OR REPLACE SNOWFLAKE.ML.FORECAST RETAIL_REVENUE_FORECAST(
+    INPUT_DATA => TABLE(DAILY_REVENUE_BY_REGION),
+    SERIES_COLNAME => 'REGION',
+    TIMESTAMP_COLNAME => 'ORDER_DATE',
+    TARGET_COLNAME => 'DAILY_REVENUE',
+    CONFIG_OBJECT => {
+        'frequency': '1 day'
+    }
+);
